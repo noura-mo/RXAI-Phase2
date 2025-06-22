@@ -1,51 +1,42 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 import pandas as pd
-from utils import clean_text, parse_strength, find_medicines
+import torch
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import warnings
+import re
 
-app = FastAPI()
+warnings.filterwarnings("ignore")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# إعدادات
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # تحميل البيانات
-try:
-    df = pd.read_csv("Final dataset.csv")
+df = pd.read_csv("Final dataset.csv")
 
-    # تنظيف الأعمدة
-    df['strength_value'], _ = zip(*df['strength'].map(parse_strength))
-    df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0)
-    df['clean_composition'] = df['composition'].map(clean_text)
-    df['clean_uses'] = df['Uses'].map(clean_text)
-    df['clean_name'] = df['Medicine Name'].map(clean_text)
+# تحميل الموديل
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
-    # دمج النصوص
-    df['combined_text'] = (
-        df['clean_name'] + " " + df['clean_composition'] + " " + df['clean_uses']
-    ).map(lambda x: x.strip())
+# نموذج الطلب
+class InputData(BaseModel):
+    name: str
 
-except Exception as e:
-    print("Failed to load or clean data:", e)
-    df = pd.DataFrame()
+# إنشاء FastAPI app
+app = FastAPI()
 
-class MedicineRequest(BaseModel):
-    active_ingredient: str
-    strength: float
-    form: str
+@app.get("/")
+def root():
+    return {"message": "RXAI API is up and running"}
 
-@app.post("/get_best_medicine")
-async def get_best_medicine(request: MedicineRequest):
-    try:
-        if df.empty:
-            raise HTTPException(status_code=500, detail="Dataset not loaded.")
-        results = find_medicines(df, request.active_ingredient, request.strength, request.form)
-        if not results:
-            raise HTTPException(status_code=404, detail="No matching medicines found")
-        return {"Available_medicines": results}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/match")
+def match(data: InputData):
+    input_text = data.name
+    input_emb = model.encode([input_text])
+    corpus_embeddings = model.encode(df['Trade Name'].astype(str).tolist())
+
+    similarities = cosine_similarity(input_emb, corpus_embeddings)[0]
+    df["score"] = similarities
+    top5 = df.sort_values(by="score", ascending=False).head(5)[["Trade Name", "score"]]
+    return top5.to_dict(orient="records")
+
