@@ -1,7 +1,8 @@
 fastapi
 uvicorn
 pandas
-scikit-learn
 torch
+scikit-learn
 sentence-transformers
+
 
